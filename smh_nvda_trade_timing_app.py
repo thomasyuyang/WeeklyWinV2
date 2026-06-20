@@ -1,435 +1,237 @@
 # smh_nvda_trade_timing_app.py
-# Streamlit Cloud app: Thomas Action Today for SMH + NVDA
+# Thomas AI Entry Screener App V4
+# Cloud/mobile Streamlit app for position tracking + best entry candidate screening
 # Educational decision support only. Not financial advice.
 
 import math
 from dataclasses import dataclass
-
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 import yfinance as yf
 
-st.set_page_config(
-    page_title="Thomas SMH + NVDA Action Today",
-    page_icon="📈",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
-st.markdown(
-    """
-    <style>
-    .main {background-color:#f7f9fb;}
-    .block-container {padding-top:1.0rem; padding-bottom:2rem; max-width:1200px;}
-    div[data-testid="metric-container"] {
-        background: rgba(255,255,255,0.94);
-        border: 1px solid #e8eef5;
-        padding: 10px 12px;
-        border-radius: 14px;
-        box-shadow: 0 1px 6px rgba(0,0,0,0.035);
-    }
-    .action-card {
-        background: white;
-        border: 1px solid #e5edf5;
-        border-radius: 18px;
-        padding: 16px 18px;
-        box-shadow: 0 2px 12px rgba(0,0,0,0.05);
-        margin: 10px 0 16px 0;
-    }
-    .action-title {font-size:1.25rem; font-weight:800; margin-bottom:8px;}
-    .action-line {font-size:1.05rem; line-height:1.55;}
-    .big-green {background:#eaf7ef; border-left:7px solid #29a35a;}
-    .big-yellow {background:#fff8e6; border-left:7px solid #d6a300;}
-    .big-red {background:#fdecec; border-left:7px solid #d94848;}
-    .big-blue {background:#edf2ff; border-left:7px solid #4b6fff;}
-    .small-note {font-size:0.90rem; color:#5b6775;}
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+st.set_page_config(page_title="Thomas AI Entry Screener", page_icon="📈", layout="wide", initial_sidebar_state="expanded")
+st.markdown("""
+<style>
+.block-container {padding-top: 1rem; padding-bottom: 2rem; max-width: 1250px;}
+div[data-testid="metric-container"] {background: rgba(255,255,255,0.95); border: 1px solid #e8eef5; padding: 10px 12px; border-radius: 14px; box-shadow: 0 1px 6px rgba(0,0,0,0.035);}
+.card {background: white; border: 1px solid #e5edf5; border-radius: 18px; padding: 16px 18px; box-shadow: 0 2px 12px rgba(0,0,0,0.05); margin: 10px 0 16px 0;}
+.green {background:#eaf7ef; border-left:7px solid #29a35a;}
+.yellow {background:#fff8e6; border-left:7px solid #d6a300;}
+.red {background:#fdecec; border-left:7px solid #d94848;}
+.blue {background:#edf2ff; border-left:7px solid #4b6fff;}
+.title {font-size:1.25rem; font-weight:800; margin-bottom:8px;}
+.line {font-size:1.02rem; line-height:1.55;}
+.note {font-size:0.90rem; color:#5b6775;}
+</style>
+""", unsafe_allow_html=True)
 
 @st.cache_data(ttl=300)
-def load_data(ticker: str, period: str = "1y", interval: str = "1d") -> pd.DataFrame:
-    df = yf.download(ticker, period=period, interval=interval, auto_adjust=True, progress=False)
+def load_data(ticker: str, period: str = "1y") -> pd.DataFrame:
+    df = yf.download(ticker, period=period, interval="1d", auto_adjust=True, progress=False)
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
     return df.dropna()
 
 def rsi(series: pd.Series, period: int = 14) -> pd.Series:
-    delta = series.diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    avg_gain = gain.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
+    delta = series.diff(); gain = delta.clip(lower=0); loss = -delta.clip(upper=0)
+    avg_gain = gain.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
     rs = avg_gain / avg_loss.replace(0, np.nan)
-    return 100 - (100 / (1 + rs))
+    return 100 - 100/(1+rs)
 
 def atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
-    high_low = df["High"] - df["Low"]
-    high_close = (df["High"] - df["Close"].shift()).abs()
-    low_close = (df["Low"] - df["Close"].shift()).abs()
-    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-    return tr.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
+    tr = pd.concat([df["High"]-df["Low"], (df["High"]-df["Close"].shift()).abs(), (df["Low"]-df["Close"].shift()).abs()], axis=1).max(axis=1)
+    return tr.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
 
 def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
-    out = df.copy()
-    out["EMA20"] = out["Close"].ewm(span=20, adjust=False).mean()
-    out["EMA50"] = out["Close"].ewm(span=50, adjust=False).mean()
-    out["EMA200"] = out["Close"].ewm(span=200, adjust=False).mean()
-    out["RSI14"] = rsi(out["Close"])
-    out["ATR14"] = atr(out)
-    out["ATR_PCT"] = out["ATR14"] / out["Close"] * 100
-    out["HIGH_6M"] = out["Close"].rolling(126, min_periods=30).max()
-    out["LOW_3M"] = out["Close"].rolling(63, min_periods=20).min()
-    out["DIST_FROM_6M_HIGH"] = (out["Close"] / out["HIGH_6M"] - 1) * 100
-    out["DIST_FROM_3M_LOW"] = (out["Close"] / out["LOW_3M"] - 1) * 100
-    out["VOL_AVG20"] = out["Volume"].rolling(20).mean()
-    out["VOL_RATIO"] = out["Volume"] / out["VOL_AVG20"]
+    out=df.copy(); out["EMA20"]=out["Close"].ewm(span=20,adjust=False).mean(); out["EMA50"]=out["Close"].ewm(span=50,adjust=False).mean(); out["EMA200"]=out["Close"].ewm(span=200,adjust=False).mean()
+    out["RSI14"]=rsi(out["Close"]); out["ATR14"]=atr(out); out["ATR_PCT"]=out["ATR14"]/out["Close"]*100
+    out["HIGH_6M"]=out["Close"].rolling(126,min_periods=30).max(); out["LOW_3M"]=out["Close"].rolling(63,min_periods=20).min()
+    out["DIST_HIGH"]=(out["Close"]/out["HIGH_6M"]-1)*100; out["DIST_LOW"]=(out["Close"]/out["LOW_3M"]-1)*100
+    out["VOL_AVG20"]=out["Volume"].rolling(20).mean(); out["VOL_RATIO"]=out["Volume"]/out["VOL_AVG20"]
     return out
 
-def dollar_to_shares(dollars: float, price: float) -> int:
-    return 0 if price <= 0 or dollars <= 0 else math.floor(dollars / price)
-
-def money(x: float) -> str:
-    return f"${x:,.0f}"
-
-def price_fmt(x: float) -> str:
-    return f"${x:,.2f}"
-
 @dataclass
-class PositionInput:
-    ticker: str
-    shares: int
-    avg_cost: float
+class State:
+    ticker:str; price:float; ema20:float; ema50:float; ema200:float; rsi:float; atr:float; atr_pct:float; dist_high:float; dist_low:float; vol_ratio:float
 
-@dataclass
-class MarketState:
-    ticker: str
-    price: float
-    ema20: float
-    ema50: float
-    ema200: float
-    rsi: float
-    atr_pct: float
-    dist_high: float
-    dist_low: float
-    vol_ratio: float
+def get_state(ticker: str, period: str="1y"):
+    df=add_indicators(load_data(ticker, period)); l=df.iloc[-1]
+    return df, State(ticker, float(l.Close), float(l.EMA20), float(l.EMA50), float(l.EMA200), float(l.RSI14), float(l.ATR14), float(l.ATR_PCT), float(l.DIST_HIGH), float(l.DIST_LOW), float(l.VOL_RATIO) if not np.isnan(l.VOL_RATIO) else 1.0)
 
+def money(x): return f"${x:,.0f}"
+def price(x): return f"${x:,.2f}"
+def shares_for(dollars, px): return max(0, math.floor(dollars/px)) if px>0 else 0
 
-def get_market_state(ticker: str, period: str = "1y"):
-    df = add_indicators(load_data(ticker, period=period))
-    latest = df.iloc[-1]
-    ms = MarketState(
-        ticker=ticker,
-        price=float(latest["Close"]),
-        ema20=float(latest["EMA20"]),
-        ema50=float(latest["EMA50"]),
-        ema200=float(latest["EMA200"]),
-        rsi=float(latest["RSI14"]),
-        atr_pct=float(latest["ATR_PCT"]),
-        dist_high=float(latest["DIST_FROM_6M_HIGH"]),
-        dist_low=float(latest["DIST_FROM_3M_LOW"]),
-        vol_ratio=float(latest["VOL_RATIO"]) if not np.isnan(latest["VOL_RATIO"]) else 1.0,
-    )
-    return df, ms
-
-
-def analyze_market_regime() -> dict:
-    rows = []
-    score = 0
-    for ticker in ["SPY", "QQQ", "SMH"]:
+def market_regime():
+    rows=[]; total=0
+    for t in ["SPY","QQQ","SMH"]:
         try:
-            _, ms = get_market_state(ticker, "1y")
-            above_50 = ms.price > ms.ema50
-            above_200 = ms.price > ms.ema200
-            ema50_up = ms.ema50 > ms.ema200
-            rsi_ok = ms.rsi >= 45
-            ticker_score = int(above_50) + int(above_200) + int(ema50_up) + int(rsi_ok)
-            score += ticker_score
-            rows.append({
-                "Ticker": ticker,
-                "Price": price_fmt(ms.price),
-                "Above EMA50": "Yes" if above_50 else "No",
-                "Above EMA200": "Yes" if above_200 else "No",
-                "EMA50 > EMA200": "Yes" if ema50_up else "No",
-                "RSI": f"{ms.rsi:.1f}",
-                "Score": ticker_score,
-            })
+            _,s=get_state(t); sc=int(s.price>s.ema50)+int(s.price>s.ema200)+int(s.ema50>s.ema200)+int(s.rsi>=45); total+=sc
+            rows.append({"Ticker":t,"Price":price(s.price),"Above EMA50":s.price>s.ema50,"Above EMA200":s.price>s.ema200,"EMA50>EMA200":s.ema50>s.ema200,"RSI":round(s.rsi,1),"Score":sc})
         except Exception:
-            rows.append({"Ticker": ticker, "Price": "N/A", "Above EMA50": "N/A", "Above EMA200": "N/A", "EMA50 > EMA200": "N/A", "RSI": "N/A", "Score": 0})
-    if score >= 10:
-        return {"regime": "Bullish", "tone": "big-green", "score": score, "max_score": 12, "buy_modifier": 1.0, "reason": "SPY, QQQ, and SMH trends are broadly healthy. Normal buy rules are allowed.", "rows": rows}
-    if score >= 7:
-        return {"regime": "Neutral", "tone": "big-yellow", "score": score, "max_score": 12, "buy_modifier": 0.6, "reason": "Market trend is mixed. New buys should be smaller and more selective.", "rows": rows}
-    return {"regime": "Defensive", "tone": "big-red", "score": score, "max_score": 12, "buy_modifier": 0.25, "reason": "Market trend is weak. Preserve cash; only tiny starter buys or no buy.", "rows": rows}
+            rows.append({"Ticker":t,"Price":"N/A","Above EMA50":False,"Above EMA200":False,"EMA50>EMA200":False,"RSI":"N/A","Score":0})
+    if total>=10: return {"name":"Bullish","score":total,"modifier":1.0,"css":"green","reason":"Broad market, tech, and semiconductor trends are healthy.","rows":rows}
+    if total>=7: return {"name":"Neutral","score":total,"modifier":0.6,"css":"yellow","reason":"Trend is mixed. New buys should be smaller.","rows":rows}
+    return {"name":"Defensive","score":total,"modifier":0.25,"css":"red","reason":"Trend is weak. Preserve cash and avoid aggressive buying.","rows":rows}
 
-def determine_price_level(ms: MarketState) -> tuple[str, str]:
-    near_high = ms.dist_high > -3
-    mildly_high = -6 < ms.dist_high <= -3
-    normal_pullback = -10 <= ms.dist_high <= -6
-    good_pullback = -16 <= ms.dist_high < -10
-    deep_pullback = ms.dist_high < -16
-    weak_trend = ms.price < ms.ema50 or ms.ema20 < ms.ema50 * 0.985
-    hot = ms.rsi >= 68
-    if weak_trend:
-        return "Weak / below trend", "red"
-    if near_high and hot:
-        return "High price level", "red"
-    if near_high:
-        return "Near high", "yellow"
-    if mildly_high:
-        return "Slightly extended", "yellow"
-    if normal_pullback:
-        return "Normal pullback", "green"
-    if good_pullback:
-        return "Good pullback", "green"
-    if deep_pullback:
-        return "Deep pullback", "blue"
-    return "Neutral", "blue"
+def price_level(s):
+    weak=s.price<s.ema50 or s.ema20<s.ema50*0.985; hot=s.rsi>=68
+    if weak: return "Weak / below trend","red"
+    if s.dist_high>-3 and hot: return "High price level","red"
+    if s.dist_high>-3: return "Near high","yellow"
+    if s.dist_high>-6: return "Slightly extended","yellow"
+    if -10<=s.dist_high<=-6: return "Normal pullback","green"
+    if -16<=s.dist_high<-10: return "Good pullback","green"
+    if s.dist_high<-16: return "Deep pullback","blue"
+    return "Neutral","blue"
 
-def base_targets(ticker: str, account_value: float, conservative_mode: bool) -> dict:
-    if ticker == "SMH":
-        return {
-            "normal": account_value * 0.60,
-            "max": account_value * 0.80,
-            "starter_high": account_value * (0.10 if conservative_mode else 0.20),
-            "starter_near": account_value * (0.15 if conservative_mode else 0.25),
-        }
-    return {
-        "normal": account_value * 0.20,
-        "max": account_value * 0.25,
-        "starter_high": 0,
-        "starter_near": account_value * (0.03 if conservative_mode else 0.05),
-    }
-
-def action_model(ms: MarketState, pos: PositionInput, account_value: float, cash_available: float, conservative_mode: bool, market_regime: dict) -> dict:
-    current_value = pos.shares * ms.price
-    has_position = pos.shares > 0
-    level, tone = determine_price_level(ms)
-    targets = base_targets(ms.ticker, account_value, conservative_mode)
-    weak = level == "Weak / below trend"
-    hot = ms.rsi >= 68
-
-    action, reason, priority, buy_dollars = "WATCH", "No clear advantage now.", 3, 0.0
-
-    if ms.ticker == "SMH":
-        if not has_position:
-            if level == "High price level":
-                action, buy_dollars, priority = "SMALL STARTER ONLY", min(targets["starter_high"], cash_available), 2
-                reason = "No SMH position, but price is high. Use tiny starter only; preserve cash."
-            elif level in ["Near high", "Slightly extended"]:
-                action, buy_dollars, priority = "START SMALL, DO NOT CHASE", min(targets["starter_near"], cash_available), 2
-                reason = "Trend is positive, but price is not cheap. Keep cash for 5%-15% pullback."
-            elif level == "Normal pullback":
-                action, buy_dollars, priority = "RATIONAL FIRST BUY", min(account_value * 0.25, cash_available), 1
-                reason = "SMH pulled back while trend remains acceptable. Better first-entry zone."
-            elif level == "Good pullback":
-                action, buy_dollars, priority = "STRONG FIRST BUY", min(account_value * 0.35, cash_available), 1
-                reason = "Meaningful pullback with acceptable trend; better risk/reward."
-            elif level == "Deep pullback":
-                if ms.price > ms.ema20:
-                    action, buy_dollars, priority = "BUY AFTER REBOUND", min(account_value * 0.20, cash_available), 2
-                    reason = "Deep pullback stabilized above EMA20. Buy smaller and watch risk."
-                else:
-                    action, priority = "WAIT FOR REBOUND", 3
-                    reason = "Deep pullback but no rebound confirmation."
-            elif weak:
-                action, reason, priority = "WAIT", "Trend is weak. Do not build first position.", 3
-        else:
-            target_gap = max(0, targets["normal"] - current_value)
-            if weak:
-                action, reason, priority = "DO NOT ADD", "SMH trend weak. Hold or reduce if risk tolerance is low.", 3
-            elif level in ["Normal pullback", "Good pullback"]:
-                action, buy_dollars, priority = "ADD TO CORE", min(account_value * 0.15, cash_available, target_gap), 1
-                reason = "Add only on pullback while trend remains acceptable."
-            elif level in ["High price level", "Near high"] and current_value > targets["normal"] * 1.15:
-                action, reason, priority = "HOLD / CONSIDER TRIM", "Position is large and price is high. Avoid adding.", 2
-            else:
-                action, reason, priority = "HOLD", "Core position is okay. No need to trade.", 3
+def dynamic_stop(s, avg_cost, has_position):
+    if s.ticker in ["NVDA","AVGO","TSM","AMD"]:
+        ema_stop=s.ema50*0.97; atr_stop=s.price-2.0*s.atr
     else:
-        if not has_position:
-            if level == "High price level":
-                action, reason, priority = "DO NOT CHASE", "NVDA is tactical and volatile. Avoid chasing high price.", 3
-            elif level in ["Near high", "Slightly extended"]:
-                action, buy_dollars, priority = "WATCH / TINY STARTER", min(targets["starter_near"], cash_available), 2
-                reason = "Only tiny exposure is rational near highs."
-            elif level == "Normal pullback":
-                action, buy_dollars, priority = "TACTICAL BUY", min(account_value * 0.08, cash_available), 1
-                reason = "Pullback with trend intact; use smaller size than SMH."
-            elif level == "Good pullback":
-                action, buy_dollars, priority = "TACTICAL BUY", min(account_value * 0.12, cash_available), 1
-                reason = "Better tactical entry, but still smaller than SMH."
-            elif level == "Deep pullback":
-                if ms.price > ms.ema20:
-                    action, buy_dollars, priority = "SMALL BUY AFTER REVERSAL", min(account_value * 0.05, cash_available), 2
-                    reason = "Deep pullback with rebound confirmation. Keep size small."
-                else:
-                    action, reason, priority = "WAIT FOR REVERSAL", "No tactical buy until stabilization.", 3
-            elif weak:
-                action, reason, priority = "WAIT", "Trend is weak. Do not buy NVDA tactically.", 3
-        else:
-            target_gap = max(0, targets["normal"] - current_value)
-            if weak:
-                action, reason, priority = "STOP / REDUCE", "NVDA tactical trend weak. Respect stop-loss.", 1
-            elif level == "High price level" and hot:
-                action, reason, priority = "TAKE PROFIT / TRIM", "NVDA is hot near high. Lock tactical profit.", 1
-            elif current_value < targets["normal"] and level in ["Normal pullback", "Good pullback"]:
-                action, buy_dollars, priority = "ADD SMALL", min(account_value * 0.05, cash_available, target_gap), 2
-                reason = "Small tactical add only."
-            else:
-                action, reason, priority = "HOLD", "No immediate NVDA action.", 3
+        ema_stop=s.ema50*0.98; atr_stop=s.price-1.8*s.atr
+    stop=max(ema_stop, atr_stop)
+    if has_position and avg_cost>0 and s.price>avg_cost*1.08:
+        stop=max(stop, s.ema20*0.98, s.price-1.8*s.atr)
+    return stop
 
-    original_buy_dollars = buy_dollars
-    buy_dollars = buy_dollars * market_regime["buy_modifier"]
-    if market_regime["regime"] == "Defensive" and original_buy_dollars > 0:
-        reason += " Market Regime is Defensive, so buy size is sharply reduced."
-        if action not in ["WAIT", "DO NOT CHASE"]:
-            action = "DEFENSIVE: SMALL ONLY"
-    elif market_regime["regime"] == "Neutral" and original_buy_dollars > 0:
-        reason += " Market Regime is Neutral, so buy size is reduced."
+def entry_score(s, regime_name):
+    level,tone=price_level(s); score=0; reasons=[]
+    if s.price>s.ema200: score+=8; reasons.append("above EMA200")
+    if s.price>s.ema50: score+=8; reasons.append("above EMA50")
+    if s.ema20>s.ema50: score+=7; reasons.append("EMA20>EMA50")
+    if s.ema50>s.ema200: score+=7; reasons.append("EMA50>EMA200")
+    if -16<=s.dist_high<=-6: score+=30; reasons.append("good pullback zone")
+    elif -6<s.dist_high<=-3: score+=14; reasons.append("slight pullback")
+    elif s.dist_high>-3: score-=10; reasons.append("near high")
+    elif s.dist_high<-16: score+=8; reasons.append("deep pullback; needs confirmation")
+    if 42<=s.rsi<=60: score+=20; reasons.append("healthy RSI")
+    elif 60<s.rsi<=68: score+=10; reasons.append("RSI a little warm")
+    elif s.rsi>70: score-=15; reasons.append("overheated RSI")
+    elif s.rsi<35: score-=8; reasons.append("too weak/oversold")
+    score += 20 if s.atr_pct<=3 else 12 if s.atr_pct<=5 else 3
+    if regime_name=="Defensive": score-=20
+    elif regime_name=="Neutral": score-=8
+    return max(0,min(100,score)), "; ".join(reasons)
 
-    buy_shares = dollar_to_shares(buy_dollars, ms.price)
-    real_buy_dollars = buy_shares * ms.price
+def target_pct(t):
+    if t=="SMH": return 0.60
+    if t in ["VGT","QQQ"]: return 0.40
+    if t in ["NVDA","MSFT","GOOGL","AVGO","TSM"]: return 0.20
+    if t=="MO": return 0.15
+    return 0.15
 
-    trim_shares, trim_action, trim_reason = 0, "No trim", "No trim now."
+def max_pct(t):
+    if t=="SMH": return 0.80
+    if t in ["VGT","QQQ"]: return 0.50
+    if t in ["NVDA","MSFT","GOOGL","AVGO","TSM"]: return 0.25
+    if t=="MO": return 0.20
+    return 0.20
+
+def action_for_candidate(s,current_value,avg_cost,account_value,cash,regime,holding_count,max_holdings):
+    level,tone=price_level(s); score,reason=entry_score(s,regime["name"]); has_position=current_value>0
+    stop=dynamic_stop(s,avg_cost,has_position); risk_pct=(s.price/stop-1)*100 if stop>0 else np.nan
+    base_buy_pct=0; action="WATCH"
+    if level in ["Normal pullback","Good pullback"] and score>=65:
+        base_buy_pct=0.12 if s.ticker not in ["SMH","VGT","QQQ"] else 0.18; action="BUY / ADD"
+    elif level in ["Slightly extended","Near high"] and not has_position and score>=55:
+        base_buy_pct=0.04 if s.ticker not in ["SMH","VGT","QQQ"] else 0.08; action="SMALL STARTER ONLY"
+    elif level=="High price level": action="DO NOT CHASE"
+    elif level=="Weak / below trend": action="WAIT / REDUCE IF HELD"
+    elif level=="Deep pullback": action="WAIT FOR REVERSAL"
+    if not has_position and holding_count>=max_holdings and base_buy_pct>0:
+        action="MAX HOLDINGS REACHED"; base_buy_pct=0
+    buy_dollars=min(account_value*base_buy_pct*regime["modifier"], cash, max(0,account_value*max_pct(s.ticker)-current_value))
+    buy_shares=shares_for(buy_dollars,s.price); buy_dollars=buy_shares*s.price
+    raw_adds=[s.price*0.97,s.price*0.95,s.price*0.90]; min_add=stop*1.03; valid_adds=[x for x in raw_adds if x>min_add]
+    trim_action="No trim"; trim_shares=0; shares_est=math.floor(current_value/s.price) if s.price>0 else 0
     if has_position:
-        if ms.ticker == "SMH" and current_value > targets["normal"] * 1.20 and level in ["High price level", "Near high"] and hot:
-            trim_shares, trim_action, trim_reason = math.floor(pos.shares * 0.20), "Trim 20%", "SMH is overweight and price level is hot."
-        elif ms.ticker == "NVDA":
-            pnl_pct = 0 if pos.avg_cost <= 0 else (ms.price / pos.avg_cost - 1) * 100
-            if pnl_pct >= 10:
-                trim_shares, trim_action, trim_reason = math.ceil(pos.shares * 0.50), "Sell 50%", "NVDA tactical gain reached +10% or more."
-            elif weak:
-                trim_shares, trim_action, trim_reason = pos.shares, "Exit / stop", "NVDA tactical trend weakened."
+        pnl=(s.price/avg_cost-1)*100 if avg_cost>0 else 0
+        if s.price<stop: trim_action="STOP / EXIT"; trim_shares=shares_est
+        elif s.ticker!="SMH" and pnl>=10: trim_action="Trim 50%"; trim_shares=math.ceil(shares_est*0.5)
+        elif current_value>account_value*target_pct(s.ticker)*1.25 and level in ["High price level","Near high"]: trim_action="Trim 20%"; trim_shares=math.ceil(shares_est*0.2)
+    return {"Ticker":s.ticker,"Price":s.price,"Level":level,"Tone":tone,"Entry Score":score,"Action":action,"Buy $":buy_dollars,"Buy Shares":buy_shares,"Current Value":current_value,"Target %":target_pct(s.ticker),"Max %":max_pct(s.ticker),"Reference Stop":stop,"Risk %":risk_pct,"Valid Add Levels":valid_adds,"Invalid Adds Removed":len(raw_adds)-len(valid_adds),"Trim Action":trim_action,"Trim Shares":trim_shares,"Reason":reason}
 
-    return {
-        "level": level, "tone": tone, "action": action, "reason": reason, "priority": priority,
-        "buy_dollars": real_buy_dollars, "buy_shares": buy_shares,
-        "current_value": current_value, "normal_target": targets["normal"], "max_position": targets["max"],
-        "trim_action": trim_action, "trim_shares": trim_shares, "trim_value": trim_shares * ms.price, "trim_reason": trim_reason,
-    }
+def plot_chart(df,ticker):
+    fig=go.Figure(); fig.add_trace(go.Candlestick(x=df.index,open=df.Open,high=df.High,low=df.Low,close=df.Close,name=ticker)); fig.add_trace(go.Scatter(x=df.index,y=df.EMA20,name="EMA20",mode="lines")); fig.add_trace(go.Scatter(x=df.index,y=df.EMA50,name="EMA50",mode="lines")); fig.add_trace(go.Scatter(x=df.index,y=df.EMA200,name="EMA200",mode="lines")); fig.update_layout(height=380,margin=dict(l=10,r=10,t=35,b=10),xaxis_rangeslider_visible=False,legend=dict(orientation="h")); return fig
 
-def levels_for_next_actions(ms: MarketState, pos: PositionInput):
-    anchor = pos.avg_cost if pos.shares > 0 and pos.avg_cost > 0 else ms.price
-    if ms.ticker == "SMH":
-        buy_levels = [("Starter / no chase zone", anchor * 0.97, "Small buy only"), ("Add zone 1", anchor * 0.95, "First add"), ("Add zone 2", anchor * 0.90, "Second add"), ("Add zone 3", anchor * 0.85, "Third add / only if trend stabilizes")]
-        sell_levels = [("Trim 20%", anchor * 1.15, 0.20), ("Trim 20%", anchor * 1.25, 0.20), ("Trim 20%", anchor * 1.35, 0.20)]
-        stop = anchor * 0.88
-    else:
-        buy_levels = [("Tiny starter zone", anchor * 0.97, "Tiny only"), ("Tactical buy zone", anchor * 0.95, "Small tactical buy"), ("Better tactical zone", anchor * 0.90, "Better risk/reward")]
-        sell_levels = [("Sell 50%", anchor * 1.10, 0.50), ("Sell remaining / trim", anchor * 1.20, 0.50)]
-        stop = anchor * 0.93
-    buy_df = pd.DataFrame([{"Next Buy Level": n, "Price": price_fmt(p), "Use": u} for n, p, u in buy_levels])
-    sell_df = pd.DataFrame([{"Sell Target": n, "Price": price_fmt(p), "Sell Shares": math.floor(pos.shares * pct), "Approx Value": money(math.floor(pos.shares * pct) * p)} for n, p, pct in sell_levels])
-    return buy_df, sell_df, stop
+st.sidebar.header("Account")
+account_value=st.sidebar.number_input("Total short-term account value ($)",min_value=1000.0,value=10000.0,step=500.0)
+cash=st.sidebar.number_input("Current cash available ($)",min_value=0.0,value=10000.0,step=100.0)
+max_holdings=st.sidebar.slider("Maximum holdings allowed",1,5,3)
+min_cash_pct=st.sidebar.slider("Minimum cash reserve %",0,50,20)/100
+st.sidebar.header("Candidate Universe")
+default_candidates="SMH,NVDA,MSFT,GOOGL,MO,VGT,QQQ"
+candidate_text=st.sidebar.text_area("Candidates to screen",default_candidates,height=80)
+candidates=[x.strip().upper() for x in candidate_text.replace(";",",").split(",") if x.strip()]
+st.sidebar.header("Current Positions")
+st.sidebar.caption("Enter 0 shares if you do not own it.")
+pos_rows=[]
+for i in range(5):
+    c1,c2,c3=st.sidebar.columns([1.1,1,1])
+    ticker=c1.text_input(f"Ticker {i+1}",value="" if i>1 else ("SMH" if i==0 else "NVDA"),key=f"pt{i}").upper().strip()
+    sh=c2.number_input("Shares",min_value=0,value=0,step=1,key=f"ps{i}")
+    cost=c3.number_input("Avg",min_value=0.0,value=0.0,step=1.0,key=f"pc{i}")
+    if ticker: pos_rows.append({"Ticker":ticker,"Shares":sh,"Avg Cost":cost})
+period=st.sidebar.selectbox("Chart period",["3mo","6mo","1y"],index=2)
+if st.sidebar.button("Refresh data"): st.cache_data.clear()
 
-def chart(df: pd.DataFrame, ticker: str):
-    fig = go.Figure()
-    fig.add_trace(go.Candlestick(x=df.index, open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"], name=ticker))
-    fig.add_trace(go.Scatter(x=df.index, y=df["EMA20"], name="EMA20", mode="lines"))
-    fig.add_trace(go.Scatter(x=df.index, y=df["EMA50"], name="EMA50", mode="lines"))
-    fig.add_trace(go.Scatter(x=df.index, y=df["EMA200"], name="EMA200", mode="lines"))
-    fig.update_layout(height=390, margin=dict(l=10, r=10, t=32, b=10), title=f"{ticker} price level", xaxis_rangeslider_visible=False, legend=dict(orientation="h"))
-    return fig
-
-# Sidebar
-st.sidebar.header("Account Settings")
-account_value = st.sidebar.number_input("Total short-term account value ($)", min_value=1000.0, value=10000.0, step=500.0)
-cash_available = st.sidebar.number_input("Current cash available ($)", min_value=0.0, value=10000.0, step=100.0)
-conservative_mode = st.sidebar.checkbox("Conservative new-position mode", value=True, help="Use smaller starter positions when SMH/NVDA are near highs.")
-st.sidebar.subheader("Position Mode")
-no_smh = st.sidebar.checkbox("I do NOT own SMH", value=True)
-no_nvda = st.sidebar.checkbox("I do NOT own NVDA", value=True)
-st.sidebar.subheader("Current Positions")
-smh_shares = 0 if no_smh else st.sidebar.number_input("SMH shares", min_value=0, value=0, step=1)
-smh_avg_cost = 0.0 if no_smh else st.sidebar.number_input("SMH average cost ($)", min_value=0.0, value=0.0, step=1.0)
-nvda_shares = 0 if no_nvda else st.sidebar.number_input("NVDA shares", min_value=0, value=0, step=1)
-nvda_avg_cost = 0.0 if no_nvda else st.sidebar.number_input("NVDA average cost ($)", min_value=0.0, value=0.0, step=1.0)
-period = st.sidebar.selectbox("Chart period", ["3mo", "6mo", "1y"], index=2)
-if st.sidebar.button("Refresh data"):
-    st.cache_data.clear()
-
-st.title("📈 Thomas Action Today: SMH + NVDA")
-st.caption("Current price level + Market Regime → action → buy/sell amount and shares.")
-
-market_regime = analyze_market_regime()
-st.markdown(f"""
-<div class="action-card {market_regime['tone']}"><div class="action-title">Market Regime: {market_regime['regime']} ({market_regime['score']}/{market_regime['max_score']})</div>
-<div class="action-line"><b>Effect on new buys:</b> {market_regime['buy_modifier']:.0%} of normal buy size<br>
-<b>Reason:</b> {market_regime['reason']}</div></div>
-""", unsafe_allow_html=True)
-with st.expander("Market Regime details: SPY / QQQ / SMH", expanded=False):
-    st.dataframe(pd.DataFrame(market_regime["rows"]), use_container_width=True, hide_index=True)
-
-st.markdown("""
-<div class="action-card big-blue"><div class="action-title">Default Philosophy</div>
-<div class="action-line">Normal target is <b>SMH 60% / NVDA 20% / Cash 20%</b>, but the app does not blindly buy that allocation. Market Regime and current price level control actual buy size.</div></div>
-""", unsafe_allow_html=True)
-
-positions = {"SMH": PositionInput("SMH", int(smh_shares), float(smh_avg_cost)), "NVDA": PositionInput("NVDA", int(nvda_shares), float(nvda_avg_cost))}
-summaries, detail_data = [], {}
-
-for ticker, pos in positions.items():
+st.title("📈 Thomas AI Entry Screener V4")
+st.caption("Position tracking + best entry candidates + dynamic stops + max holding rules.")
+reg=market_regime()
+st.markdown(f"""<div class="card {reg['css']}"><div class="title">Market Regime: {reg['name']} ({reg['score']}/12)</div><div class="line"><b>Buy size modifier:</b> {reg['modifier']:.0%}<br><b>Reason:</b> {reg['reason']}</div></div>""",unsafe_allow_html=True)
+with st.expander("Market regime details",expanded=False): st.dataframe(pd.DataFrame(reg["rows"]),hide_index=True,use_container_width=True)
+positions=pd.DataFrame(pos_rows); positions=positions[positions["Shares"]>0] if not positions.empty else positions
+holding_count=len(positions["Ticker"].unique()) if not positions.empty else 0; current_holdings=set(positions["Ticker"].unique()) if not positions.empty else set()
+st.markdown(f"""<div class="card blue"><div class="title">Portfolio Rules</div><div class="line"><b>Max holdings:</b> {max_holdings} &nbsp; | &nbsp; <b>Current holdings:</b> {holding_count} &nbsp; | &nbsp; <b>Minimum cash reserve:</b> {min_cash_pct:.0%}<br>New candidate buys are blocked if max holdings are reached. Add levels below Reference Stop × 1.03 are automatically removed.</div></div>""",unsafe_allow_html=True)
+pos_map={}
+for _,r in positions.iterrows() if not positions.empty else []: pos_map[r["Ticker"]]={"shares":int(r["Shares"]),"avg_cost":float(r["Avg Cost"])}
+all_tickers=sorted(set(candidates)|set(pos_map.keys()))
+results=[]; details={}
+for t in all_tickers:
     try:
-        df, ms = get_market_state(ticker, period)
-        plan = action_model(ms, pos, account_value, cash_available, conservative_mode, market_regime)
-        buy_df, sell_df, stop_ref = levels_for_next_actions(ms, pos)
-        summaries.append({"Ticker": ticker, "Price Level": plan["level"], "Action": plan["action"], "Buy Now": money(plan["buy_dollars"]), "Buy Shares": plan["buy_shares"], "Trim Action": plan["trim_action"], "Trim Shares": plan["trim_shares"], "Stop Ref": price_fmt(stop_ref), "Priority": plan["priority"]})
-        detail_data[ticker] = (df, ms, pos, plan, buy_df, sell_df, stop_ref)
-    except Exception as e:
-        st.error(f"Could not analyze {ticker}: {e}")
-
-if summaries:
-    action_df = pd.DataFrame(summaries).sort_values(["Priority", "Ticker"])
-    top = action_df.iloc[0]
-    tone_class = "big-green"
-    if any(w in str(top["Action"]) for w in ["WAIT", "CHASE", "STOP", "DEFENSIVE"]):
-        tone_class = "big-red" if market_regime["regime"] == "Defensive" else "big-yellow"
-    elif any(w in str(top["Action"]) for w in ["START", "WATCH"]):
-        tone_class = "big-yellow"
-    st.markdown(f"""
-    <div class="action-card {tone_class}"><div class="action-title">Thomas Action Today</div>
-    <div class="action-line"><b>Market Regime:</b> {market_regime['regime']}<br><b>First priority:</b> {top['Ticker']} — {top['Price Level']} → <b>{top['Action']}</b><br>
-    <b>Buy now:</b> {top['Buy Now']} / {top['Buy Shares']} shares<br>
-    <b>Trim now:</b> {top['Trim Action']} / {top['Trim Shares']} shares<br>
-    <b>Stop reference:</b> {top['Stop Ref']}</div></div>
-    """, unsafe_allow_html=True)
-    st.subheader("Action Summary")
-    st.dataframe(action_df.drop(columns=["Priority"]), use_container_width=True, hide_index=True)
-
-for ticker in ["SMH", "NVDA"]:
-    if ticker not in detail_data:
-        continue
-    df, ms, pos, plan, buy_df, sell_df, stop_ref = detail_data[ticker]
-    css = {"green": "big-green", "yellow": "big-yellow", "red": "big-red", "blue": "big-blue"}.get(plan["tone"], "big-blue")
-    st.markdown(f"## {ticker}")
-    st.markdown(f"""
-    <div class="action-card {css}"><div class="action-title">{ticker}: {plan['level']} → {plan['action']}</div>
-    <div class="action-line"><b>Recommended buy now:</b> {money(plan['buy_dollars'])} / {plan['buy_shares']} shares<br>
-    <b>Recommended trim now:</b> {plan['trim_action']} — {plan['trim_shares']} shares ≈ {money(plan['trim_value'])}<br>
-    <b>Reason:</b> {plan['reason']}<br><span class="small-note">Trim reason: {plan['trim_reason']}</span></div></div>
-    """, unsafe_allow_html=True)
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Current Price", price_fmt(ms.price)); c2.metric("RSI14", f"{ms.rsi:.1f}"); c3.metric("ATR %", f"{ms.atr_pct:.2f}%"); c4.metric("From 6M High", f"{ms.dist_high:.1f}%")
-    c5, c6, c7, c8 = st.columns(4)
-    c5.metric("Current Value", money(plan["current_value"])); c6.metric("Normal Target", money(plan["normal_target"])); c7.metric("Max Position", money(plan["max_position"])); c8.metric("Stop Reference", price_fmt(stop_ref))
-    with st.expander(f"{ticker} next buy/sell levels", expanded=True):
-        st.markdown("### Next Buy Levels"); st.dataframe(buy_df, use_container_width=True, hide_index=True)
-        st.markdown("### Sell / Trim Targets"); st.dataframe(sell_df, use_container_width=True, hide_index=True)
-    st.plotly_chart(chart(df.tail(130), ticker), use_container_width=True, key=f"chart_{ticker}")
-
-st.markdown("---")
+        df,s=get_state(t,period); shares=pos_map.get(t,{}).get("shares",0); avg_cost=pos_map.get(t,{}).get("avg_cost",0.0); current_value=shares*s.price
+        res=action_for_candidate(s,current_value,avg_cost,account_value,cash,reg,holding_count,max_holdings); results.append(res); details[t]=(df,s,res,shares,avg_cost)
+    except Exception as e: st.warning(f"Could not load {t}: {e}")
+if results:
+    dfres=pd.DataFrame(results)
+    if max(0,cash-account_value*min_cash_pct)<=0:
+        dfres["Buy $"]=0.0; dfres["Buy Shares"]=0; dfres.loc[dfres["Current Value"]<=0,"Action"]="CASH RESERVE LIMIT"
+    top_buy=dfres[(dfres["Buy Shares"]>0)&(~dfres["Action"].str.contains("MAX|RESERVE|CHASE|WAIT",regex=True))].sort_values("Entry Score",ascending=False)
+    if not top_buy.empty:
+        tb=top_buy.iloc[0]; css={"green":"green","yellow":"yellow","red":"red","blue":"blue"}.get(tb["Tone"],"blue")
+        st.markdown(f"""<div class="card {css}"><div class="title">Thomas Best Entry Candidate Today: {tb['Ticker']}</div><div class="line"><b>Action:</b> {tb['Action']}<br><b>Buy:</b> {money(tb['Buy $'])} / {int(tb['Buy Shares'])} shares<br><b>Price level:</b> {tb['Level']} &nbsp; | &nbsp; <b>Entry score:</b> {tb['Entry Score']}/100<br><b>Reference stop:</b> {price(tb['Reference Stop'])}<br><span class="note">{tb['Reason']}</span></div></div>""",unsafe_allow_html=True)
+    else:
+        st.markdown("""<div class="card yellow"><div class="title">Thomas Best Entry Candidate Today: No strong new buy</div><div class="line">Candidates may be near high, weak, max holdings reached, or cash reserve limit reached.</div></div>""",unsafe_allow_html=True)
+    display=dfres.copy();
+    for col in ["Price","Reference Stop"]: display[col]=display[col].map(price)
+    for col in ["Buy $","Current Value"]: display[col]=display[col].map(money)
+    display["Risk %"]=display["Risk %"].map(lambda x:f"{x:.1f}%")
+    display["Target %"]=display["Target %"].map(lambda x:f"{x:.0%}"); display["Max %"]=display["Max %"].map(lambda x:f"{x:.0%}")
+    cols=["Ticker","Level","Action","Entry Score","Price","Buy $","Buy Shares","Current Value","Reference Stop","Risk %","Trim Action","Trim Shares","Invalid Adds Removed","Reason"]
+    st.subheader("Candidate Screener Ranking"); st.dataframe(display.sort_values("Entry Score",ascending=False)[cols],hide_index=True,use_container_width=True)
+    st.subheader("Current Holding Review")
+    if holding_count==0: st.info("No current holdings entered.")
+    else: st.dataframe(display[display["Ticker"].isin(current_holdings)][cols],hide_index=True,use_container_width=True)
+    selected=st.selectbox("View detail chart",all_tickers)
+    if selected in details:
+        df,s,res,shares,avg_cost=details[selected]
+        st.markdown(f"## {selected} Detail")
+        c1,c2,c3,c4=st.columns(4); c1.metric("Current Price",price(s.price)); c2.metric("Entry Score",f"{res['Entry Score']}/100"); c3.metric("Reference Stop",price(res["Reference Stop"])); c4.metric("Risk to Stop",f"{res['Risk %']:.1f}%")
+        adds=res["Valid Add Levels"]; add_df=pd.DataFrame({"Valid Add Level":[price(x) for x in adds] if adds else ["None"],"Note":["Above stop × 1.03"]*len(adds) if adds else ["Lower add zones removed because they conflict with stop"]})
+        st.markdown("### Valid Add Levels"); st.dataframe(add_df,hide_index=True,use_container_width=True)
+        st.plotly_chart(plot_chart(df.tail(130),selected),use_container_width=True)
 st.markdown("""
-### How to use this app on phone
-1. Enter total short-term account value.
-2. Enter actual cash available.
-3. Check “I do NOT own SMH/NVDA” if you have no position.
-4. Read **Market Regime** first.
-5. Read **Thomas Action Today** second.
-6. If Market Regime is Defensive, buy size is automatically reduced.
-7. Then check SMH and NVDA details.
-
-Educational decision-support only. It does not place trades and does not guarantee profit.
+---
+### Built-in practical rules
+- Max holdings limit prevents over-tracking.
+- New buys are screened and ranked; app highlights only the best candidate.
+- Dynamic Reference Stop recalculates each time the app opens.
+- Buy/add levels below Reference Stop × 1.03 are removed.
+- Defensive Market Regime reduces buy size.
+- Minimum cash reserve prevents full deployment.
+- Educational decision support only; no profit guarantee.
 """)

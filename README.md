@@ -1,20 +1,7 @@
-# Thomas AI Entry Screener App V4
+# Thomas AI Entry Screener App V5
 
-Cloud/mobile Streamlit app for best entry candidate screening and position tracking.
+Main Streamlit Cloud file: `smh_nvda_trade_timing_app.py`
 
-Main file for Streamlit Cloud:
+V5 adds Positions Manager: upload/edit/download holdings CSV.
 
-`smh_nvda_trade_timing_app.py`
-
-Features:
-- Market Regime
-- Candidate screener
-- Max holdings rule
-- Current position tracking
-- Dynamic reference stop
-- No buy/add zone below stop × 1.03
-- Best Entry Candidate Today
-- Minimum cash reserve
-- Mobile-friendly layout
-
-Educational decision support only. Not financial advice.
+CSV columns: Ticker,Shares,Avg Cost
